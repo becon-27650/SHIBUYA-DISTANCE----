@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHIBUYA DISTANCE - 誰も近づけない渋谷 -</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #fff;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+            background: radial-gradient(circle, #222530 0%, #0d0e12 100%);
+        }
+
+        /* UIレイライアウト */
+        .ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+        }
+
+        h1 {
+            margin: 0 0 5px 0;
+            font-size: 24px;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(0,255,255,0.5);
+        }
+
+        .score-board {
+            font-size: 18px;
+            font-family: monospace;
+            color: #00ffcc;
+        }
+
+        .instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            color: #888;
+            text-align: center;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div class="ui-layer">
+            <h1>SHIBUYA DISTANCE</h1>
+            <div class="score-board">MROWD DENSITY: <span id="density-val">100</span>%</div>
+        </div>
+        <div class="instructions">マウスを動かすか、画面をスワイプして移動（人が逃げていきます）</div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const densityVal = document.getElementById('density-val');
+
+        // 画面サイズ合わせ
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // ゲーム設定
+        const CONFIG = {
+            npcCount: 600,         // 人の数（密集度）
+            npcRadius: 6,          // 人のサイズ
+            playerRadius: 12,      // プレイヤーのサイズ
+            repulsionRadius: 140,  // プレイヤーが人を弾き飛ばすオーラの範囲
+            repulsionForce: 0.25,  // 弾き飛ばす強さ（慣性用）
+            friction: 0.92,        // 減速の度合い
+            normalSpeed: 0.8       // 普段の歩行速度
+        };
+
+        // マウス・タッチ位置（初期値は画面中央）
+        const mouse = {
+            x: canvas.width / 2,
+            y: canvas.height / 2
+        };
+
+        // マウス＆タッチイベント登録
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        window.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                mouse.x = e.touches[0].clientX;
+                mouse.y = e.touches[0].clientY;
+            }
+        }, { passive: true });
+
+        // NPC（通行人）クラス
+        class NPC {
+            constructor() {
+                this.init(true);
+            }
+
+            // 初期化（isStartがtrueなら画面全体、falseなら画面外からリスポーン）
+            init(isStart = false) {
+                if (isStart) {
+                    this.x = Math.random() * canvas.width;
+                    this.y = Math.random() * canvas.height;
+                } else {
+                    // 画面の上下左右のどこか外側から登場させる
+                    const edge = Math.floor(Math.random() * 4);
+                    if (edge === 0) { this.x = Math.random() * canvas.width; this.y = -20; }        // 上
+                    else if (edge === 1) { this.x = Math.random() * canvas.width; this.y = canvas.height + 20; } // 下
+                    else if (edge === 2) { this.x = -20; this.y = Math.random() * canvas.height; }        // 左
+                    else { this.x = canvas.width + 20; this.y = Math.random() * canvas.height; } // 右
+                }
+
+                // ランダムな移動方向
+                const angle = Math.random() * Math.PI * 2;
+                this.vx = Math.cos(angle) * CONFIG.normalSpeed;
+                this.vy = Math.sin(angle) * CONFIG.normalSpeed;
+
+                // 渋谷っぽいネオンカラー
+                const colors = ['#ff0055', '#00ffcc', '#ffff00', '#ff9900', '#0066ff', '#ffffff'];
+                this.color = colors[Math.floor(Math.random() * colors.length)];
+            }
+
+            update() {
+                // プレイヤー（マウス）との距離計算
+                const dx = this.x - mouse.x;
+                const dy = this.y - mouse.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                // 範囲内にプレイヤーが来たら「逃げる力」を速度に加算
+                if (distance < CONFIG.repulsionRadius && distance > 0) {
+                    // 近ければ近いほど強い力を受ける
+                    const force = (CONFIG.repulsionRadius - distance) / CONFIG.repulsionRadius;
+                    
+                    // 逃げる方向のベクトル
+                    this.vx += (dx / distance) * force * CONFIG.repulsionForce * 12;
+                    this.vy += (dy / distance) * force * CONFIG.repulsionForce * 12;
+                } else {
+                    // 通常時は摩擦で減速しつつ、本来のうろうろする動きに戻す
+                    this.vx *= CONFIG.friction;
+                    this.vy *= CONFIG.friction;
+                    
+                    // 最低限の歩行速度を維持
+                    const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (currentSpeed < CONFIG.normalSpeed) {
+                        const angle = Math.atan2(this.vy, this.vx) + (Math.random() - 0.5) * 0.5;
+                        this.vx = Math.cos(angle) * CONFIG.normalSpeed;
+                        this.vy = Math.sin(angle) * CONFIG.normalSpeed;
+                    }
+                }
+
+                // 位置の更新
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // 画面外に完全に消えたら逆側、もしくは新しくリスポーン
+                if (this.x < -50 || this.x > canvas.width + 50 || this.y < -50 || this.y > canvas.height + 50) {
+                    this.init(false);
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, CONFIG.npcRadius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 4;
+                ctx.shadowColor = this.color;
+                ctx.fill();
+            }
+        }
+
+        // NPCの配列作成
+        const npcs = [];
+        for (let i = 0; i < CONFIG.npcCount; i++) {
+            npcs.push(new NPC());
+        }
+
+        // ゲームループ
+        function loop() {
+            // 前のフレームをクリア
+            ctx.shadowBlur = 0; 
+            ctx.fillStyle = 'rgba(13, 14, 18, 0.3)'; // 残像エフェクト（スクランブル交差点のブレ感）
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // プレイヤーの斥力フィールド（視覚エフェクト）
+            ctx.beginPath();
+            ctx.arc(mouse.x, mouse.y, CONFIG.repulsionRadius, 0, Math.PI * 2);
+            const gradient = ctx.createRadialGradient(mouse.x, mouse.y, CONFIG.playerRadius, mouse.x, mouse.y, CONFIG.repulsionRadius);
+            gradient.addColorStop(0, 'rgba(0, 255, 200, 0.15)');
+            gradient.addColorStop(0.5, 'rgba(0, 255, 200, 0.03)');
+            gradient.addColorStop(1, 'rgba(0, 255, 200, 0)');
+            ctx.fillStyle = gradient;
+            ctx.fill();
+
+            // プレイヤー本体の描画
+            ctx.beginPath();
+            ctx.arc(mouse.x, mouse.y, CONFIG.playerRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#00ffcc';
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#00ffcc';
+            ctx.fill();
+
+            // NPCの更新と描画、および範囲内の人数カウント
+            let insideCount = 0;
+            npcs.forEach(npc => {
+                npc.update();
+                npc.draw();
+
+                // プレイヤーの近くにどれだけ人が残っているか判定
+                const dx = npc.x - mouse.x;
+                const dy = npc.y - mouse.y;
+                if (Math.sqrt(dx * dx + dy * dy) < CONFIG.repulsionRadius + 50) {
+                    insideCount++;
+                }
+            });
+
+            // 周辺の「混雑度（MROWD DENSITY）」を計算してUIに反映
+            // 本来あるべき密度から、プレイヤーによってどれだけ排除されたかを％化
+            const baseExpected = CONFIG.npcCount * (Math.PI * Math.pow(CONFIG.repulsionRadius + 50, 2)) / (canvas.width * canvas.height);
+            const density = Math.max(0, Math.min(100, Math.round((insideCount / (baseExpected || 1)) * 100)));
+            densityVal.textContent = density;
+
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
